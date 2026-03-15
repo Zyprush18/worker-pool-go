@@ -2,11 +2,10 @@ package main
 
 import (
 	"fmt"
-	"image"
 	"path/filepath"
 	"sync"
 
-	"github.com/disintegration/imaging"
+	"github.com/h2non/bimg"
 )
 
 var (
@@ -17,16 +16,10 @@ var (
 
 
 type ConvertJob struct {
-	Name chan string
-	Image chan image.Image
-	Format string
 	Wg sync.WaitGroup
-	Mx sync.Mutex
 }
 
 type ResizeImage struct {
-	Name chan string
-	Image chan image.Image
 	Width int
 	Height int
 	Wg sync.WaitGroup
@@ -34,55 +27,58 @@ type ResizeImage struct {
 }
 
 type CompressImage struct {
-	Name chan string
-	Image chan image.Image
 	Quality int
+	Size int
 	Wg sync.WaitGroup
 }
 
 type ImageJob struct {
+	Name chan string
+	Image chan []byte
+	Format bimg.ImageType
 	Convert ConvertJob
 	Resize ResizeImage
 	Compress CompressImage
 	Worker int
 }
 
-func NewImageJobConvert(worker int, img chan image.Image, name chan string, format string) *ImageJob {
+func (j *ImageJob) SelectExtension() string {
+	switch j.Format {
+	case bimg.JPEG:
+		return "jpg"
+	case bimg.PNG:
+		return "png"
+	case bimg.WEBP:
+		return "webp"
+	default:
+		return "unknown"
+	}
+}
+
+func NewJobImageProcessing(worker int, name chan string, image chan []byte, format bimg.ImageType) *ImageJob {
 	return &ImageJob{
+		Name:   name,
+		Image:  image,
+		Format: format,
 		Worker: worker,
 		Convert: ConvertJob{
-			Name: name,
-			Image: img,
-			Format: format,
+			Wg: sync.WaitGroup{},
+
+		},
+		Resize: ResizeImage{
 			Wg: sync.WaitGroup{},
 			Mx: sync.Mutex{},
 		},
-	}
-}
-
-func NewImageJobResize(worker int, img chan image.Image, name chan string,width, height int) *ImageJob {
-	return &ImageJob{
-		Worker: worker,
-		Resize: ResizeImage{
-			Name: name,
-			Image:  img,
-			Width:  width,
-			Height: height,
-			Wg:     sync.WaitGroup{},
-			Mx: sync.Mutex{},
-		},
-	}
-}
-
-func NewImageJobCompress(worker int, img chan image.Image, name chan string,quality int) *ImageJob {
-	return &ImageJob{
-		Worker: worker,
 		Compress: CompressImage{
-			Name: name,
-			Image:   img,
-			Quality: quality,
-			Wg:      sync.WaitGroup{},
+			Wg: sync.WaitGroup{},
 		},
+	}
+}
+
+
+func (j *ImageJob) SaveToDir(dir string, name string, img []byte) {
+	if err := bimg.Write(filepath.Join(dir, name), img); err != nil {
+		panic(err)
 	}
 }
 
@@ -96,7 +92,10 @@ func (j *ImageJob) WorkerConvert() {
 }
 
 
-func (j *ImageJob) WorkerResize() {
+func (j *ImageJob) WorkerResize(width, height int) {
+	j.Resize.Width = width
+	j.Resize.Height = height
+
 	for i := 1; i <= j.Worker; i++ {
 		j.Resize.Wg.Add(1)
 		go j.ResizeProcess(i)
@@ -104,7 +103,9 @@ func (j *ImageJob) WorkerResize() {
 	j.Resize.Wg.Wait()
 }
 
-func (j *ImageJob) WorkerCompress() {
+func (j *ImageJob) WorkerCompress(quality int, size int) {
+	j.Compress.Quality = quality
+
 	for i := 1; i <= j.Worker; i++ {
 		j.Compress.Wg.Add(1)
 		go j.CompressProcess(i)
@@ -117,28 +118,49 @@ func (j *ImageJob) WorkerCompress() {
 
 func (j *ImageJob) ConvertProcess(i int) {
 	defer j.Convert.Wg.Done()
-	for v := range j.Convert.Image {
+	for v := range j.Image {
 		fmt.Printf("Worker %d sedang kerja\n", i)
-		if err:= imaging.Save(v, filepath.Join(convertDir, <-j.Convert.Name+"."+j.Convert.Format));err != nil {
+		newImg, err := bimg.NewImage(v).Convert(j.Format)
+		if err != nil {
 			panic(err)
 		}
+
+		name := <-j.Name + "." + j.SelectExtension()
+
+		j.SaveToDir(convertDir, name, newImg)
 	}
 }
 
 
 func (j *ImageJob) ResizeProcess(i int) {
 	defer j.Resize.Wg.Done()
-	for v := range j.Resize.Image {
-		name := <-j.Resize.Name+".jpg"
-		fmt.Printf("worker %d riseze image %s\n", i, name)
-		img:= imaging.Resize(v, j.Resize.Width, j.Resize.Height, imaging.NearestNeighbor)
-		if err:= imaging.Save(img, filepath.Join(resizeDir, name));err != nil {
+	for v := range j.Image {
+		name := <-j.Name + "." + j.SelectExtension()
+
+		fmt.Printf("worker %d risize image %s\n", i, name)
+		newImg, err := bimg.NewImage(v).Resize(j.Resize.Width, j.Resize.Height)
+		if err != nil {
 			panic(err)
 		}
+
+		j.SaveToDir(resizeDir, name, newImg)
 	}
 }
 
 
 func (j *ImageJob) CompressProcess(i int) {
-	
+	defer j.Compress.Wg.Done()
+	for v := range j.Image {
+		name := <-j.Name + "." + j.SelectExtension()
+		fmt.Printf("worker %d compressing image %s\n", i, name)
+		newImg, err := bimg.NewImage(v).Process(bimg.Options{Quality: j.Compress.Quality})
+		if err != nil {
+			panic(err)
+		}
+		if len(newImg) > j.Compress.Size {
+			j.Compress.Quality -= 5
+		}
+
+		j.SaveToDir(compressDir, name, newImg)
+	}
 }

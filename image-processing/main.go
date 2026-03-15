@@ -1,60 +1,55 @@
 package main
 
 import (
-	"errors"
-	"image"
+	"fmt"
+	"log"
 	"os"
+
 	"path/filepath"
 
+	"github.com/h2non/bimg"
 	"strings"
-
-	"github.com/gen2brain/avif"
 )
 
 func main() {
+
+	args := os.Args
+	if len(args) < 2 {
+		log.Fatalln("Please added argument (convert/resize/compress)")
+	}
+
 	dir := "./image"
+
 	files, err := os.ReadDir(dir)
 	if err != nil {
 		panic(err)
 	}
 
-	img := make(chan image.Image, len(files))
+	img := make(chan []byte, len(files))
 	name := make(chan string, len(files))
 	for _, v := range files {
-		f, err := os.Open(filepath.Join(dir, v.Name()))
+		fileName := strings.Split(v.Name(), ".")
+		name <- fileName[0]
+		buffer, err := bimg.Read(filepath.Join(dir, v.Name()))
 		if err != nil {
 			panic(err)
 		}
-		defer f.Close()
-
-		fileName := strings.Split(v.Name(), ".")
-		name <- fileName[0]
-		switch fileName[1] {
-		case "jpg", "png", "gif":
-			imge, _, err := image.Decode(f)
-			if err != nil {
-				panic(err)
-			}
-			img <- imge
-		case "avif":
-			imge, err := avif.Decode(f)
-			if err != nil {
-				panic(err)
-			}
-			img <- imge
-
-		default:
-			panic(errors.New("unsupported file format"))
-		}
+		img <- buffer
 	}
 
-	close(name)
 	close(img)
+	close(name)
 
-	// convert := NewImageJobConvert(3, img, name, "jpg")
-	// convert.WorkerConvert()
+	JobImage := NewJobImageProcessing(3, name, img, bimg.JPEG)
+	switch args[1] {
+	case "convert":
+		JobImage.WorkerConvert()
+	case "resize":
+		JobImage.WorkerResize(300, 400)
+	case "compress":
+		JobImage.WorkerCompress(80, 2048)
+	default:
+		fmt.Println("Invalid argument. Use: convert/resize/compress")
+	}
 
-	// fmt.Println(<-name)
-	resize := NewImageJobResize(3, img,name, 300, 400)
-	resize.WorkerResize()
 }
